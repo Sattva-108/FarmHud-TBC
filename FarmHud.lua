@@ -23,7 +23,9 @@ end
 
 ---------------------------------------------------------------------------------------------
 
+
 local onShow = function()
+	--print("OnShow - called.")
 	fh_mapRotation = GetCVar("rotateMinimap")
 	SetCVar("rotateMinimap", "1")
 	if GatherMate and (FarmHudDB.show_gathermate == true) then
@@ -50,6 +52,8 @@ end
 
 local onHide = function()
 	SetCVar("rotateMinimap", fh_mapRotation)
+	-- Fix pfQuest icons rotating after farmhud is hidden
+	SetCVar("rotateMinimap", "0")
 	if GatherMate then
 		GatherMate:GetModule("Display"):ReparentMinimapPins(Minimap)
 		GatherMate:GetModule("Display"):ChangedVars(nil, "ROTATE_MINIMAP", fh_mapRotation)
@@ -88,14 +92,32 @@ function FarmHud:SetScales()
 	gatherCircle:SetWidth(size * 0.45)
 	gatherCircle:SetHeight(size * 0.45)
 
+	if FarmHudDB.show_gather_circle then
+		gatherCircle:Show()
+	else
+		gatherCircle:Hide()
+	end
+
 	FarmHudMapCluster:SetScale(fh_scale)
 	playerDot:SetWidth(15)
 	playerDot:SetHeight(15)
 
+	local size = UIParent:GetHeight() * FarmHudDB.fh_scale -- Use multiplication
+	FarmHudMinimap:SetWidth(size)
+	FarmHudMinimap:SetHeight(size)
+	FarmHudMapCluster:SetHeight(size)
+	FarmHudMapCluster:SetWidth(size)
+
 	for _, v in ipairs(directions) do
-		v.radius = FarmHudMinimap:GetWidth() * 0.214
+		if FarmHudDB.enable_directions then
+			v:Show()
+			v.radius = FarmHudMinimap:GetWidth() * 0.214
+		else
+			v:Hide()
+		end
 	end
 end
+
 
 ---------------------------------------------------------------------------------------------
 
@@ -110,31 +132,56 @@ function FarmHud:Toggle(flag)
 		else
 			FarmHudMapCluster:Show()
 			FarmHud:SetScales()
+			FarmHud:MouseToggle(false)
 		end
 	else
 		if flag then
 			FarmHudMapCluster:Show()
 			FarmHud:SetScales()
+			FarmHud:MouseToggle(false)
 		else
 			FarmHudMapCluster:Hide()
 		end
 	end
 end
 
-function FarmHud:MouseToggle()
-	if FarmHudMinimap:IsMouseEnabled() then
-		FarmHudMinimap:EnableMouse(false)
-		mousewarn:Hide()
-	else
+
+local MouseToggled = false
+
+-- Register events
+local FarmHudFrame = CreateFrame("Frame")
+FarmHudFrame:RegisterEvent("MODIFIER_STATE_CHANGED") -- Entered combat
+
+-- Set up event handlers
+FarmHudFrame:SetScript("OnEvent", function(_, event, ...)
+	if event == "MODIFIER_STATE_CHANGED" then
+		if IsModifierKeyDown() then
+			FarmHud:MouseToggle(true)
+			MouseToggled = true
+		else
+			FarmHud:MouseToggle(false)
+			MouseToggled = false
+		end
+	end
+end)
+
+function FarmHud:MouseToggle(enableMouse)
+	if enableMouse then
 		FarmHudMinimap:EnableMouse(true)
-		FarmHudMinimap:SetScript("OnMouseDown", function (_, button) -- enable mouselook with mouse enabled
-			if button=='RightButton' then
+		FarmHudMinimap:SetScript("OnMouseDown", function (_, button)
+			if button == 'RightButton' then
 				MouselookStart()
 			end
 		end)
 		mousewarn:Show()
+
+	else
+		FarmHudMinimap:EnableMouse(false)
+		mousewarn:Hide()
 	end
 end
+
+
 
 do
 	local target = 1 / 90
@@ -176,13 +223,49 @@ function FarmHud:CreateOptions()
 	show_mounted:SetPoint("TOPLEFT",subText,"BOTTOMLEFT", 10, -10)
 	option_toggles[i] = show_mounted
 
+	if FarmHUD_Options then
+
+		-- directions NE SW etc...
+
+		local directionOption = panel:MakeToggle(
+				'name', 'Toggle Direction Showing',
+				'description', 'Toggle to disable direction showing on the FarmHUD minimap.',
+				'default', true,
+				'getFunc', function() return FarmHudDB.enable_directions end,
+				'setFunc', function(value) FarmHudDB.enable_directions = value
+					FarmHud:SetScales()
+				end)
+		directionOption:SetPoint("TOPLEFT", option_toggles[i], "BOTTOMLEFT")
+		i = i + 1
+		option_toggles[i] = directionOption
+
+		-- gather green circle
+
+		local gatherCircleOption = panel:MakeToggle(
+				'name', 'Toggle Gather Circle',
+				'description', 'Show gather circle on the FarmHUD minimap.',
+				'default', true,
+				'getFunc', function() return FarmHudDB.show_gather_circle end,
+				'setFunc', function(value)
+					FarmHudDB.show_gather_circle = value
+					FarmHud:SetScales()  -- Call the function to update scales immediately
+				end)
+		gatherCircleOption:SetPoint("TOPLEFT", option_toggles[i], "BOTTOMLEFT")
+		i = i + 1
+		option_toggles[i] = gatherCircleOption
+
+	end
+
+
 	if GatherMate then
 		local gathermate = panel:MakeToggle(
 				'name', 'Show Gathermate Nodes',
 				'description', 'Show Gathermate Nodes',
 				'default', true,
 				'getFunc', function() return FarmHudDB.show_gathermate end,
-				'setFunc', function(value) FarmHudDB.show_gathermate = value end)
+				'setFunc', function(value)
+					FarmHudDB.show_gathermate = value
+				end)
 		gathermate:SetPoint("TOPLEFT",option_toggles[i],"BOTTOMLEFT")
 		i = i + 1
 		option_toggles[i] = gathermate
@@ -212,6 +295,27 @@ function FarmHud:CreateOptions()
 		option_toggles[i] = routes
 	end
 
+	local scaleSlider = panel:MakeSlider(
+			'name', 'FarmHUD Scale',
+			'description', 'Adjust the scale of FarmHUD on the minimap.',
+			'minText', '0.5x',
+			'maxText', '2x',
+			'minValue', 0.5, -- Adjust these values
+			'maxValue', 2.0, -- Adjust these values
+			'step', 0.05,
+			'default', 1.4,
+			'getFunc', function() return FarmHudDB.fh_scale end,
+			'setFunc', function(value)
+				FarmHudDB.fh_scale = value
+				FarmHud:SetScales() -- Update scales immediately
+			end
+	)
+
+	scaleSlider:SetPoint("TOPLEFT", option_toggles[i], "BOTTOMLEFT", 0, -20)
+	i = i + 1
+	option_toggles[i] = scaleSlider
+
+
 end
 
 ---------------------------------------------------------------------------------------------
@@ -226,24 +330,32 @@ function FarmHud:PLAYER_LOGIN()
 		FarmHudDB = {}
 	end
 
-	if not FarmHudDB.show_gathermate then
-		FarmHudDB.show_gathermate = true
-	end
+	if FarmHudDB then
+		if FarmHudDB.fh_scale == nil then
+			FarmHudDB.fh_scale = 1.4 -- Set a default scale value
+		end
 
-	if not FarmHudDB.show_routes then
-		FarmHudDB.show_routes = true
-	end
+		-- FIXME: GatherMate Not persists through logout.
 
-	if not FarmHudDB.show_gatherer then
-		FarmHudDB.show_gatherer = true
-	end
+		if FarmHudDB.show_gathermate == nil then
+			FarmHudDB.show_gathermate = true
+		end
 
-	if not FarmHudDB.show_mounted then
-		FarmHudDB.show_mounted = false
-	end
+		if FarmHudDB.show_routes == nil then
+			FarmHudDB.show_routes = true
+		end
 
-	if not FarmHudDB.show_npcscan then
-		FarmHudDB.show_npcscan = true
+		if FarmHudDB.show_gatherer == nil then
+			FarmHudDB.show_gatherer = true
+		end
+
+		if FarmHudDB.show_mounted == nil then
+			FarmHudDB.show_mounted = false
+		end
+
+		if FarmHudDB.show_npcscan == nil then
+			FarmHudDB.show_npcscan = true
+		end
 	end
 
 	if LDBIcon then
@@ -272,6 +384,7 @@ function FarmHud:PLAYER_LOGIN()
 	gatherCircle:SetHeight(radius)
 	gatherCircle.alphaFactor = 0.5
 	gatherCircle:SetVertexColor(0, 1, 0, 1 * (gatherCircle.alphaFactor or 1) / FarmHudMapCluster:GetAlpha())
+	--gatherCircle:Hide()
 
 	playerDot = FarmHudMapCluster:CreateTexture()
 	playerDot:SetTexture([[Interface\GLUES\MODELS\UI_Tauren\gradientCircle.blp]])
@@ -306,7 +419,7 @@ function FarmHud:PLAYER_LOGIN()
 	FarmHudMapCluster:SetScript("OnHide", onHide)
 	FarmHud:CreateOptions()
 	print("Loaded")
-	print("Type '/fh' to toggle FarmHUD and '/fh mouse' to toggle hovering over the tracked nodes.")
+	print("Type '/fh' to toggle FarmHUD")
 	print("You can find more options (like disabling GatherMate nodes) in the interface menu.")
 end
 
@@ -336,6 +449,11 @@ FarmHUD_OnUpdate.timeSinceLastUpdate = 0
 FarmHUD_OnUpdate:SetScript("OnUpdate", function(self, elapsed)
 	FarmHUD_OnUpdate.timeSinceLastUpdate = FarmHUD_OnUpdate.timeSinceLastUpdate + elapsed
 	if (FarmHUD_OnUpdate.timeSinceLastUpdate > FarmHUD_OnUpdate.updateInterval) then
+		if not IsModifierKeyDown() and FarmHudMapCluster:IsVisible() and MouseToggled == true and not MouseToggled == false then
+			FarmHud:MouseToggle(false)
+			MouseToggled = false
+		end
+
 		if FarmHudDB.show_mounted then
 			if IsMounted() and not UnitOnTaxi("player") then
 				FarmHud:Toggle(true)
@@ -359,7 +477,8 @@ local function FarmHudSlashCmd(msg)
 	if msg == "" then
 		FarmHud:Toggle()
 	elseif msg == "mouse" then
-		FarmHud:MouseToggle()
+		--FarmHud:MouseToggle()
+		print("/fh mouse is longer a command. Please use any modifier key to toggle mouse.")
 	end
 end
 
